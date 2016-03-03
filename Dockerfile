@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     easy-rsa \
     dnsutils \
     iptables \
+    libpam-pwdfile \
     netmask \
     mawk \
     rsync \
@@ -13,11 +14,12 @@ RUN apt-get update && apt-get install -y \
     wget \
     && apt-get clean
 
-COPY entry.sh /usr/local/sbin/entry.sh
-COPY get_client_config.sh /usr/local/sbin/get_client_config.sh
+COPY *.sh /usr/local/sbin/
 RUN chmod 744 /usr/local/sbin/entry.sh && \
     chown root:root /usr/local/sbin/entry.sh && \
-    chmod 755 /usr/local/sbin/get_client_config.sh && \
-    chown root:root /usr/local/sbin/get_client_config.sh
+    chmod 744 /usr/local/sbin/vpn_get_client_config.sh && \
+    chown root:root /usr/local/sbin/vpn_get_client_config.sh && \
+    chmod 744 /usr/local/sbin/vpn_create_user.sh && \
+    chown root:root /usr/local/sbin/vpn_create_user.sh
 
 CMD ["/usr/local/sbin/entry.sh"]

@@ -7,16 +7,26 @@ function checkpoint { [ "$CONTINUE" = "0" ] && echo "Unrecoverable errors found,
 
 OPENVPNDIR="/etc/openvpn"
 
+touch $OPENVPNDIR/credentials
+cat > /etc/pam.d/openvpn <<- EOF
+auth            required        /lib/x86_64-linux-gnu/security/pam_pwdfile.so pwdfile=$OPENVPNDIR/credentials
+account         required        pam_permit.so
+session         required        pam_permit.so
+password        required        pam_deny.so
+EOF
+
 #=====[ Checking config variables ]=============================================
 for i in CERT_COUNTRY CERT_PROVINCE CERT_CITY CERT_ORG CERT_EMAIL CERT_OU VPNPOOL_NETWORK VPNPOOL_CIDR
 do
     [ "${!i}" = "" ] && error "empty value for variable '$i'"
 done
 
+[ "${#CERT_COUNTRY}" != "2" ] && error "Certificate Country must be a 2 characters long string only"
+
 checkpoint
 
 #=====[ Generating server config ]==============================================
-VPNPOOL_NETMASK=$(netmask -s 192.168.250.0/24 | awk -F/ '{print $2}')
+VPNPOOL_NETMASK=$(netmask -s $VPNPOOL_NETWORK/$VPNPOOL_CIDR | awk -F/ '{print $2}')
 
 cat > $OPENVPNDIR/server.conf <<- EOF
 port 1194
@@ -30,7 +40,6 @@ dh easy-rsa/keys/dh2048.pem
 cipher AES-128-CBC
 auth SHA1
 server $VPNPOOL_NETWORK $VPNPOOL_NETMASK
-#push "redirect-gateway def1 bypass-dhcp"
 push "dhcp-option DNS 169.254.169.250"
 push "dhcp-option SEARCH rancher.internal"
 push "route 10.42.0.0 255.255.0.0"
@@ -41,8 +50,11 @@ persist-tun
 #status openvpn-status.log
 client-cert-not-required
 plugin /usr/lib/openvpn/openvpn-plugin-auth-pam.so openvpn
+
+$OPENVPN_EXTRACONF
 EOF
 
+#=====[ Generating certificates ]===============================================
 if [ ! -d $OPENVPNDIR/easy-rsa ]; then
    # Copy easy-rsa tools to /etc/openvpn
    rsync -avz /usr/share/easy-rsa $OPENVPNDIR/
@@ -57,27 +69,36 @@ if [ ! -d $OPENVPNDIR/easy-rsa ]; then
 
    pushd $OPENVPNDIR/easy-rsa
    . ./vars
-   ./clean-all
-   ./build-ca --batch
-   ./build-key-server --batch server
-   ./build-dh
+   ./clean-all || error "Cannot clean previous keys"
+   checkpoint
+   ./build-ca --batch || error "Cannot build certificate authority"
+   checkpoint
+   ./build-key-server --batch server || error "Cannot create server key"
+   checkpoint
+   ./build-dh || error "Cannot create dh file"
+   checkpoint
    ./build-key --batch RancherVPNClient
    openvpn --genkey --secret keys/ta.key
    popd
 fi
 
-# Enable tcp forwarding and add iptables MASQUERADE rule
+#=====[ Enable tcp forwarding and add iptables MASQUERADE rule ]================
 echo 1 > /proc/sys/net/ipv4/ip_forward
 iptables -t nat -F
 iptables -t nat -A POSTROUTING -s $VPNPOOL_NETWORK/$VPNPOOL_NETMASK -j MASQUERADE
 
+#=====[ Display client config  ]================================================
+/usr/local/sbin/vpn_get_client_config.sh
+
+#=====[ Display How-to ]========================================================
+echo ""
 echo "=====[ HOW TO ]==========================================================="
 echo ""
-echo " - To generate client config, run the get_client_config.sh script "
-echo " - To add users, simply use standard \"adduser\" or \"useradd\" command"
+echo " - To regenerate client config, run the 'vpn_get_client_config.sh' script "
+echo " - To add users, use the 'vpn_create_user.sh' script"
 echo ""
 echo "=========================================================================="
+echo ""
 
-/usr/local/sbin/get_client_config.sh
-
+#=====[ Starting OpenVPN server ]===============================================
 /usr/sbin/openvpn --cd /etc/openvpn --config server.conf
